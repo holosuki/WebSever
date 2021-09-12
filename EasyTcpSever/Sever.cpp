@@ -1,11 +1,23 @@
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#define WIN32_LEAN_AND_MEAN //记得写这句话，不然下面两个include有问题；
-#include <windows.h>
-#include <winsock2.h>
+#ifdef _WIN32
+	#define _WINSOCK_DEPRECATED_NO_WARNINGS
+	#define WIN32_LEAN_AND_MEAN //记得写这句话，不然下面两个include有问题；
+	#include <windows.h>
+	#include <winsock2.h>
+	//#pragma comment(lib,"ws2_32.lib") //仅在windows里适用，通用的实在属性里加ws2_32.lib；
+#else		//linux或者MacOS
+	#include <unistd.h>
+	#include <arpa/inet.h>
+	#include <string.h>
+
+	#define SOCKET int
+	#define INVALID_SOCKET  (SOCKET)(~0)
+	#define SOCKET_ERROR            (-1)
+#endif
+
 #include <stdio.h>
+#include <thread>
 #include <vector>
 
-//#pragma comment(lib,"ws2_32.lib") //仅在windows里适用，通用的实在属性里加ws2_32.lib；
 
 enum CMD
 {
@@ -85,7 +97,7 @@ int ProcessorFunction(SOCKET _csock)
 {
 	char szRecv[1024] = {};
 	//接收客户端请求
-	int nlen = recv(_csock, szRecv, sizeof(DataHeaader), 0);
+	int nlen = (int)recv(_csock, szRecv, sizeof(DataHeaader), 0);
 	DataHeaader* _header = (DataHeaader*)szRecv;
 	if (nlen <= 0)
 	{
@@ -126,11 +138,13 @@ int ProcessorFunction(SOCKET _csock)
 
 int main()
 {
+#ifdef _WIN32
 	//启动windows socket 2.x 环境；下面是2.2；
 	WORD ver = MAKEWORD(2, 2);
 	WSADATA dat;
 	WSAStartup(ver, &dat);
 	//————
+#endif
 
 	//--用socket API建立简易TCP服务端
 	//1 建立一个SOCKET
@@ -139,7 +153,11 @@ int main()
 	sockaddr_in _sin = {};
 		_sin.sin_family = AF_INET;
 		_sin.sin_port = htons(4567);//host to net unsigned short,主机地址转换成网络无符号短整型地址；
+#ifdef _WIN32
 		_sin.sin_addr.S_un.S_addr = INADDR_ANY;// inet_addr("127.0.0.1"),内网链接;或者 INADDR_ANY 任意本机地址；
+#else
+		_sin.sin_addr.s_addr = INADDR_ANY;// inet_addr("127.0.0.1"),内网链接;或者 INADDR_ANY 任意本机地址；
+#endif
 	if (SOCKET_ERROR == bind(_sock, (sockaddr*)&_sin, sizeof(_sin)))
 	{
 		printf("ERROR 绑定用于接受客户端连接的网络端口失败\n");
@@ -172,15 +190,18 @@ int main()
 		FD_SET(_sock, &fdWrite);
 		FD_SET(_sock, &fdExp);
 
+		SOCKET maxSock = _sock;
+
 		for (int i = g_client.size() - 1; i >= 0; --i)
 		{
 			FD_SET(g_client[i], &fdRead);
+			maxSock = maxSock > g_client[i] ? maxSock : g_client[i];
 		}
 
 		timeval time = {0, 0};	//定义阻塞或者非阻塞， 1是定义的最大等待时间
 
 		//nfds 是一个整数值，是指fd_set集合中的所有描述符范围，而不是数量，最大描述符+1
-		int ret = select(_sock + 1, &fdRead, &fdWrite, &fdExp, &time);
+		int ret = select(maxSock + 1, &fdRead, &fdWrite, &fdExp, &time);
 		if (ret < 0)
 		{
 			printf("failed,close \n");
@@ -193,7 +214,11 @@ int main()
 			sockaddr_in clientAddr = {};
 			int nAddrLen = sizeof(sockaddr_in);
 			SOCKET _clientSock = INVALID_SOCKET;
+#ifdef _WIN32
 			_clientSock = accept(_sock, (sockaddr*)&clientAddr, &nAddrLen);
+#else 
+			_clientSock = accept(_sock, (sockaddr*)&clientAddr, (socklen_t*)&nAddrLen);
+#endif
 			if (INVALID_SOCKET == _clientSock)
 			{
 				printf("ERROR 接收到无效客户端\n");
@@ -206,6 +231,7 @@ int main()
 			printf("新客户端加入：SOCKET = %d IP = %s \n", _clientSock,inet_ntoa(clientAddr.sin_addr));
 			g_client.push_back(_clientSock);
 		}
+#ifdef _WIN32
 		for (size_t k = 0; k < fdRead.fd_count; ++k)
 		{
 			if(-1 == ProcessorFunction(fdRead.fd_array[k]))
@@ -217,17 +243,42 @@ int main()
 				}
 			}
 		}
+#else
+		for (int i = (int)g_client.size() - 1; i >= 0; --i)
+		{
+			if (FD_ISSET(g_client[i], &fdRead)) //判断有没有
+			{
+				if (-1 == ProcessorFunction(g_client[i]))
+				{
+					auto iter = g_client.begin();
+					if (iter != g_client.end())
+					{
+						g_client.erase(iter);
+					}
+				}
+			}
+		}
+#endif
 		//printf("空闲时间执行其他任务。\n");
 	}
+#ifdef _WIN32
 	for (int k = 0; k < (int)g_client.size(); ++k)
 	{
 		closesocket(g_client[k]);
 	}
 	//6 关闭socket
+
 	closesocket(_sock);
 	//————
 	//清除环境
 	WSACleanup();
+#else
+	for (int k = 0; k < (int)g_client.size(); ++k)
+	{
+		close(g_client[k]);
+	}
+	close(_sock);
+#endif
 	printf("服务器关闭\n");
 	getchar();
 	return 0;

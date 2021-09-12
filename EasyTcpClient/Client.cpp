@@ -1,10 +1,21 @@
-#define WIN32_LEAN_AND_MEAN //记得写这句话，不然下面两个include有问题；
-#include <windows.h>
-#include <winsock2.h>
+#ifdef _WIN32	//windows系统
+	#define WIN32_LEAN_AND_MEAN //记得写这句话，不然下面两个include有问题；
+	#include <windows.h>
+	#include <winsock2.h>
+	//#pragma comment(lib,"ws2_32.lib") //仅在windows里适用，通用的实在属性里加ws2_32.lib；
+#else		//linux或者MacOS
+	#include <unistd.h>
+	#include <arpa/inet.h>
+	#include <string.h>
+
+	#define SOCKET int
+	#define INVALID_SOCKET  (SOCKET)(~0)
+	#define SOCKET_ERROR            (-1)
+#endif
+
 #include <stdio.h>
 #include <thread>
 
-//#pragma comment(lib,"ws2_32.lib") //仅在windows里适用，通用的实在属性里加ws2_32.lib；
 
 //命令列表
 enum CMD
@@ -86,11 +97,11 @@ int ProcessorFunction(SOCKET _csock)
 {
 	char szRecv[1024] = {};
 	//接收客户端请求
-	int nlen = recv(_csock, szRecv, sizeof(DataHeaader), 0);
+	int nlen = (int)recv(_csock, szRecv, sizeof(DataHeaader), 0);
 	DataHeaader* _header = (DataHeaader*)szRecv;
 	if (nlen <= 0)
 	{
-		printf("disconnect...\n", _csock);
+		printf("disconnect...\n");
 		return -1;
 	}
 	switch (_header->cmd)
@@ -117,6 +128,7 @@ int ProcessorFunction(SOCKET _csock)
 		}
 		break;
 	}
+	return 0;
 }
 
 bool g_bRun = true;
@@ -132,7 +144,7 @@ void cmdThread(SOCKET _sock) {
 		}
 		else if (0 == strcmp(cmdbuf, "login")) {
 			Login log;
-			strcpy(log.userName, "张国荣");
+			strcpy(log.userName, "zgr");
 			strcpy(log.passWord, "23");
 			send(_sock, (const char*)&log, sizeof(Login), 0);
 		}
@@ -149,11 +161,13 @@ void cmdThread(SOCKET _sock) {
 
 int main()
 {
+#ifdef _WIN32
 	//启动windows socket 2.x 环境；下面是2.2；
 	WORD ver = MAKEWORD(2, 2);
 	WSADATA dat;
 	WSAStartup(ver, &dat);
 	//————
+#endif
 
 	//--用socket API建立简易TCP客户端
 	//1 建立一个socket
@@ -170,7 +184,11 @@ int main()
 	sockaddr_in _sin = {};
 	_sin.sin_family = AF_INET;
 	_sin.sin_port = htons(4567);
-	_sin.sin_addr.S_un.S_addr = inet_addr("127.0.0.1");// INADDR_ANY;
+#ifdef _WIN32
+	_sin.sin_addr.S_un.S_addr = inet_addr("192.168.31.179");//inet_addr("127.0.0.1");// INADDR_ANY;
+#else 
+	_sin.sin_addr.s_addr = inet_addr("192.168.132.1");	//针对虚拟机的ipv4地址
+#endif
 	int ret = connect(_sock,(sockaddr*)&_sin,sizeof(sockaddr_in));
 	if (SOCKET_ERROR == ret)
 	{
@@ -191,7 +209,11 @@ int main()
 		FD_ZERO(&fdRead);
 		FD_SET(_sock, &fdRead);
 		timeval time = { 1,0 };
+#ifdef _WIN32
 		int ret = select(_sock, &fdRead, NULL, NULL, &time);
+#else
+		int ret = select(_sock + 1, &fdRead, NULL, NULL, &time);
+#endif
 		if (ret < 0)
 		{
 			printf("failed，closed1\n");
@@ -212,11 +234,15 @@ int main()
 		//Sleep(2000);//Window下
 	}
 	//7 关闭socket
+#ifdef _WIN32
 	closesocket(_sock);
 
 	//————
 	//清除环境
 	WSACleanup();
+#else 
+	close(_sock);
+#endif
 	printf("客户端退出\n");
 	getchar();
 	return 0;
