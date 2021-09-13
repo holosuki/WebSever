@@ -1,144 +1,13 @@
-#ifdef _WIN32	//windows系统
-	#define WIN32_LEAN_AND_MEAN //记得写这句话，不然下面两个include有问题；
-	#include <windows.h>
-	#include <winsock2.h>
-	//#pragma comment(lib,"ws2_32.lib") //仅在windows里适用，通用的实在属性里加ws2_32.lib；
-#else		//linux或者MacOS
-	#include <unistd.h>
-	#include <arpa/inet.h>
-	#include <string.h>
-
-	#define SOCKET int
-	#define INVALID_SOCKET  (SOCKET)(~0)
-	#define SOCKET_ERROR            (-1)
-#endif
-
+#include "EasyTcpClient.hpp"
 #include <stdio.h>
 #include <thread>
 
-
-//命令列表
-enum CMD
-{
-	CMD_LOGIN,
-	CMD_LOGIN_RESULT,
-	CMD_LOGOUT,
-	CMD_LOGOUT_RESULT,
-	CMD_NEW_USER_JOIN,
-	CMD_ERROR
-};
-
-//数据包头
-//前期测试用short
-struct DataHeaader
-{
-	short dataLength;	//数据长度
-	short cmd;			//命令
-};
-
-//数据包体
-struct Login :public DataHeaader
-{
-	Login()
-	{
-		dataLength = sizeof(Login);
-		cmd = CMD_LOGIN;
-	}
-	char userName[32];
-	char passWord[32];
-
-};
-
-struct LoginResult :public DataHeaader
-{
-	LoginResult()
-	{
-		dataLength = sizeof(LoginResult);
-		cmd = CMD_LOGIN_RESULT;
-		result = 0;
-	}
-	int result;
-};
-
-struct LogOut :public DataHeaader
-{
-	LogOut()
-	{
-		dataLength = sizeof(LogOut);
-		cmd = CMD_LOGOUT;
-
-	}
-	char userName[32];
-};
-
-struct LogoutResult :public DataHeaader
-{
-	LogoutResult()
-	{
-		dataLength = sizeof(LogoutResult);
-		cmd = CMD_LOGOUT_RESULT;
-		result = 0;
-	}
-	int result;
-};
-
-struct NewUser :public DataHeaader
-{
-	NewUser()
-	{
-		dataLength = sizeof(NewUser);
-		cmd = CMD_NEW_USER_JOIN;
-		sock_id = 0;
-	}
-	int sock_id;
-};
-
-int ProcessorFunction(SOCKET _csock)
-{
-	char szRecv[1024] = {};
-	//接收客户端请求
-	int nlen = (int)recv(_csock, szRecv, sizeof(DataHeaader), 0);
-	DataHeaader* _header = (DataHeaader*)szRecv;
-	if (nlen <= 0)
-	{
-		printf("disconnect...\n");
-		return -1;
-	}
-	switch (_header->cmd)
-	{
-		case CMD_LOGIN_RESULT:
-		{
-			recv(_csock, szRecv + sizeof(DataHeaader), _header->dataLength - sizeof(DataHeaader), 0);
-			LoginResult* Loginres = (LoginResult*)szRecv;
-			printf("Received server data CMD_LOGIN_RESULT:  Data Length= %d \n", Loginres->dataLength);
-		}
-		break;
-		case CMD_LOGOUT_RESULT:
-		{
-			recv(_csock, szRecv + sizeof(DataHeaader), _header->dataLength - sizeof(DataHeaader), 0);
-			LogoutResult* Logoutres = (LogoutResult*)szRecv;
-			printf("Received server data CMD_LOGOUT_RESULT:  Data Length= %d \n", Logoutres->dataLength);
-		}
-		break;
-		case CMD_NEW_USER_JOIN:
-		{
-			recv(_csock, szRecv + sizeof(DataHeaader), _header->dataLength - sizeof(DataHeaader), 0);
-			NewUser* newUserJoin = (NewUser*)szRecv;
-			printf("Received server data CMD_NEW_USER_JOIN:  Data Length= %d \n", newUserJoin->dataLength);
-		}
-		break;
-	}
-	return 0;
-}
-
-bool g_bRun = true;
-//客户端输入
-void cmdThread(SOCKET _sock) {
+void cmdThread(EasyTcpClient* client) {
 	while (true) {
 		char cmdbuf[256] = {};
 		scanf("%s", cmdbuf);
 		if (0 == strcmp(cmdbuf, "exit")) {
-			g_bRun = false;
+			client->Close();
 			printf("close\n");
 			return;
 		}
@@ -146,12 +15,12 @@ void cmdThread(SOCKET _sock) {
 			Login log;
 			strcpy(log.userName, "zgr");
 			strcpy(log.passWord, "23");
-			send(_sock, (const char*)&log, sizeof(Login), 0);
+			client->SendData(&log);
 		}
-		else if (0 == strcmp(cmdbuf, "login")) {
+		else if (0 == strcmp(cmdbuf, "logout")) {
 			LogOut logout;
-			strcpy(logout.userName, "张国荣");
-			send(_sock, (const char*)&logout, sizeof(LogOut), 0);
+			strcpy(logout.userName, "zgr");
+			client->SendData(&logout);
 		}
 		else {
 			printf("commond error!\n");
@@ -161,89 +30,27 @@ void cmdThread(SOCKET _sock) {
 
 int main()
 {
-#ifdef _WIN32
-	//启动windows socket 2.x 环境；下面是2.2；
-	WORD ver = MAKEWORD(2, 2);
-	WSADATA dat;
-	WSAStartup(ver, &dat);
-	//————
-#endif
+	EasyTcpClient client1;
+	client1.Connect("127.0.0.1", 6000);
 
-	//--用socket API建立简易TCP客户端
-	//1 建立一个socket
-	SOCKET _sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (INVALID_SOCKET == _sock)
-	{
-		printf("建立socket失败\n");
-	}
-	else
-	{
-		printf("建立socket成功\n");
-	}
-	//2 连接服务器 connect
-	sockaddr_in _sin = {};
-	_sin.sin_family = AF_INET;
-	_sin.sin_port = htons(4567);
-#ifdef _WIN32
-	_sin.sin_addr.S_un.S_addr = inet_addr("192.168.31.179");//inet_addr("127.0.0.1");// INADDR_ANY;
-#else 
-	_sin.sin_addr.s_addr = inet_addr("192.168.132.1");	//针对虚拟机的ipv4地址
-#endif
-	int ret = connect(_sock,(sockaddr*)&_sin,sizeof(sockaddr_in));
-	if (SOCKET_ERROR == ret)
-	{
-		printf("连接服务器失败\n");
-	}
-	else
-	{
-		printf("连接服务器成功\n");
-	}
-	
+	EasyTcpClient client2;
+	client2.Connect("192.168.31.179", 6001);
+
 	//线程
-	std::thread t1(cmdThread, _sock);
+	std::thread t1(cmdThread, &client1);
 	t1.detach();	//与主线程分离，因为主线程先退出
 
-	while (g_bRun)
+	std::thread t2(cmdThread, &client2);
+	t2.detach();
+
+	while (client1.isRun() || client2.isRun())
 	{
-		fd_set fdRead;
-		FD_ZERO(&fdRead);
-		FD_SET(_sock, &fdRead);
-		timeval time = { 1,0 };
-#ifdef _WIN32
-		int ret = select(_sock, &fdRead, NULL, NULL, &time);
-#else
-		int ret = select(_sock + 1, &fdRead, NULL, NULL, &time);
-#endif
-		if (ret < 0)
-		{
-			printf("failed，closed1\n");
-			break;
-		}
-		if (FD_ISSET(_sock, &fdRead))
-		{
-			FD_CLR(_sock, &fdRead);
-			if (-1 == ProcessorFunction(_sock))
-			{
-				printf("failed，closed2\n");
-				break;
-			}
-		}
-
-		//printf("client，working\n");
-		
-		//Sleep(2000);//Window下
+		client1.OnRun();
+		client2.OnRun();
 	}
-	//7 关闭socket
-#ifdef _WIN32
-	closesocket(_sock);
+	client1.Close();
+	client2.Close();
 
-	//————
-	//清除环境
-	WSACleanup();
-#else 
-	close(_sock);
-#endif
-	printf("客户端退出\n");
 	getchar();
 	return 0;
 }
