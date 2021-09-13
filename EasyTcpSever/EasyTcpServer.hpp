@@ -118,11 +118,13 @@ public:
 			fd_set fdRead;
 			FD_ZERO(&fdRead);
 			FD_SET(_sock, &fdRead);
+			SOCKET maxSock = _sock;
 			for (int i = g_clients.size() - 1; i >= 0; i--) {
 				FD_SET(g_clients[i], &fdRead);
+				maxSock = maxSock > g_clients[i] ? maxSock : g_clients[i];
 			}
 			timeval time = { 1,0 };
-			int ret = select(_sock + 1, &fdRead, 0, 0, &time);
+			int ret = select(maxSock + 1, &fdRead, 0, 0, &time);
 			if (ret < 0) {
 				printf("failed£¬closed\n");
 				Close();
@@ -152,7 +154,7 @@ public:
 				{
 					if (-1 == RecvData(g_clients[i]))
 					{
-						auto iter = g_clients.begin();
+						auto iter = g_clients.begin() + i;
 						if (iter != g_clients.end())
 						{
 							g_clients.erase(iter);
@@ -162,11 +164,8 @@ public:
 			}
 #endif
 			//printf("other work doing\n");
-
-			return true;
 		}
-		return false;
-
+		return true;
 	}
 
 	//¹Ø±Õsocket
