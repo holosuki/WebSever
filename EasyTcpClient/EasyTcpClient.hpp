@@ -19,9 +19,16 @@
 #include <stdio.h>
 #include "MessageHeader.hpp"
 
-class EasyTcpClient
-{
+#ifndef RECV_BUF_SIZE
+#define RECV_BUF_SIZE 10240
+#endif
+
+class EasyTcpClient{
+private:
 	SOCKET _sock;
+	char _szRecv[RECV_BUF_SIZE] = {};		//接受缓冲区
+	char _msgRecv[RECV_BUF_SIZE * 10] = {};	//第二缓冲区
+	int _lastPos = 0;
 public:
 	EasyTcpClient()
 	{
@@ -136,21 +143,28 @@ public:
 	}
 
 	//接收数据 处理粘包 拆分包
-	int RecvData(SOCKET _cSock)
+	int RecvData(SOCKET cSock)
 	{
-		//缓冲区
-		char szRecv[4096] = {};
-		// 5 接收客户端数据
-		int nLen = (int)recv(_cSock, szRecv, sizeof(DataHeader), 0);
-		DataHeader* header = (DataHeader*)szRecv;
+		//接收客户端数据
+		int nLen = (int)recv(cSock, _szRecv, RECV_BUF_SIZE, 0);
 		if (nLen <= 0)
 		{
 			printf("与服务器断开连接，任务结束。\n");
 			return -1;
 		}
-		recv(_cSock, szRecv + sizeof(DataHeader), header->dataLength - sizeof(DataHeader), 0);
-
-		OnNetMsg(header);
+		//处理接收消息少包问题
+		memcpy(_msgRecv + _lastPos, _szRecv, nLen);
+		_lastPos += nLen;
+		while (_lastPos >= sizeof(DataHeader)) {
+			DataHeader* header = (DataHeader*)_msgRecv;
+			if (_lastPos >= header->dataLength) {	//避免粘包
+				int len = _lastPos - header->dataLength;
+				OnNetMsg(header);
+				memcpy(_msgRecv, _msgRecv + header->dataLength, len);
+				_lastPos = len;
+			}
+			else break;	//少包
+		}
 		return 0;
 	}
 
@@ -159,25 +173,33 @@ public:
 	{
 		switch (header->cmd)
 		{
-		case CMD_LOGIN_RESULT:
-		{
+			case CMD_LOGIN_RESULT:
+			{
 
-			LoginResult* login = (LoginResult*)header;
-			printf("收到服务端消息：CMD_LOGIN_RESULT,数据长度：%d\n", login->dataLength);
-		}
-		break;
-		case CMD_LOGOUT_RESULT:
-		{
-			LogoutResult* logout = (LogoutResult*)header;
-			printf("收到服务端消息：CMD_LOGOUT_RESULT,数据长度：%d\n", logout->dataLength);
-		}
-		break;
-		case CMD_NEW_USER_JOIN:
-		{
-			NewUser* userJoin = (NewUser*)header;
-			printf("收到服务端消息：CMD_NEW_USER_JOIN,数据长度：%d\n", userJoin->dataLength);
-		}
-		break;
+				LoginResult* login = (LoginResult*)header;
+				//printf("<socket = %d>收到服务端消息：CMD_LOGIN_RESULT,数据长度：%d\n", _sock, login->dataLength);
+			}
+			break;
+			case CMD_LOGOUT_RESULT:
+			{
+				LogoutResult* logout = (LogoutResult*)header;
+				//printf("<socket = %d>收到服务端消息：CMD_LOGOUT_RESULT,数据长度：%d\n", _sock, logout->dataLength);
+			}
+			break;
+			case CMD_NEW_USER_JOIN:
+			{
+				NewUser* userJoin = (NewUser*)header;
+				//printf("<socket = %d>收到服务端消息：CMD_NEW_USER_JOIN,数据长度：%d\n", _sock, userJoin->dataLength);
+			}
+			break;
+			case CMD_ERROR:
+			{
+				//printf("<socket = %d>收到服务端消息：CMD_ERROR,数据长度：%d\n", _sock, header->dataLength);
+			}
+			default:
+			{
+				printf("<socket = %d>收到无效消息，数据长度：%d\n", _sock, header->dataLength);
+			}
 		}
 	}
 

@@ -1,56 +1,64 @@
 #include "EasyTcpClient.hpp"
-#include <stdio.h>
-#include <thread>
+#include<thread>
 
-void cmdThread(EasyTcpClient* client) {
-	while (true) {
-		char cmdbuf[256] = {};
-		scanf("%s", cmdbuf);
-		if (0 == strcmp(cmdbuf, "exit")) {
-			client->Close();
-			printf("close\n");
-			return;
-		}
-		else if (0 == strcmp(cmdbuf, "login")) {
-			Login log;
-			strcpy(log.userName, "zgr");
-			strcpy(log.passWord, "23");
-			client->SendData(&log);
-		}
-		else if (0 == strcmp(cmdbuf, "logout")) {
-			LogOut logout;
-			strcpy(logout.userName, "zgr");
-			client->SendData(&logout);
+bool g_bRun = true;
+void cmdThread()
+{
+	while (true)
+	{
+		char cmdBuf[256] = {};
+		scanf("%s", cmdBuf);
+		if (0 == strcmp(cmdBuf, "exit"))
+		{
+			g_bRun = false;
+			printf("退出cmdThread线程\n");
+			break;
 		}
 		else {
-			printf("commond error!\n");
+			printf("不支持的命令。\n");
 		}
 	}
 }
 
 int main()
 {
-	EasyTcpClient client1;
-	client1.Connect("127.0.0.1", 6000);
+	const int cCount =  FD_SETSIZE - 1;
+	EasyTcpClient* client[cCount];	//用指针避免栈内存不足，用指针使用堆内存
 
-	EasyTcpClient client2;
-	client2.Connect("192.168.31.179", 6001);
-
-	//线程
-	std::thread t1(cmdThread, &client1);
-	t1.detach();	//与主线程分离，因为主线程先退出
-
-	std::thread t2(cmdThread, &client2);
-	t2.detach();
-
-	while (client1.isRun() || client2.isRun())
+	for (int n = 0; n < cCount; n++)
 	{
-		client1.OnRun();
-		client2.OnRun();
+		client[n] = new EasyTcpClient();
 	}
-	client1.Close();
-	client2.Close();
+	for (int n = 0; n < cCount; n++)
+	{
+		client[n]->Connect("127.0.0.1", 4567);
+	}
 
+	//启动UI线程
+	std::thread t1(cmdThread);
+	t1.detach();
+
+	Login login;
+	strcpy(login.userName, "gjx");
+	strcpy(login.passWord, "123456");
+	while (g_bRun)
+	{
+		for (int n = 0; n < cCount; n++)
+		{
+			client[n]->SendData(&login);
+			client[n]->OnRun();
+		}
+
+		//printf("空闲时间处理其它业务..\n");
+		//Sleep(1000);
+	}
+
+	for (int n = 0; n < cCount; n++)
+	{
+		client[n]->Close();
+	}
+
+	printf("已退出。\n");
 	getchar();
 	return 0;
 }

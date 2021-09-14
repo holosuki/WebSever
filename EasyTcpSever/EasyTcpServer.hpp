@@ -2,11 +2,10 @@
 #define _EasyTcpServer_hpp_
 
 #ifdef _WIN32
-	#define _WINSOCK_DEPRECATED_NO_WARNINGS
 	#define WIN32_LEAN_AND_MEAN //记得写这句话，不然下面两个include有问题；
 	#include <windows.h>
 	#include <winsock2.h>
-	//#pragma comment(lib,"ws2_32.lib") //仅在windows里适用，通用的实在属性里加ws2_32.lib；
+	#pragma comment(lib,"ws2_32.lib") //仅在windows里适用，通用的实在属性里加ws2_32.lib；
 #else		//linux或者MacOS
 	#include <unistd.h>
 	#include <arpa/inet.h>
@@ -19,15 +18,38 @@
 
 #include <iostream>
 #include <stdio.h>
-#include <thread>
 #include <vector>
 
 #include "MessageHeader.hpp"
 
+#ifndef RECV_BUF_SIZE
+#define RECV_BUF_SIZE 10240
+#endif
+
+class ClientSocket {
+private:
+	SOCKET _sockfd;
+	char _msgRecv[RECV_BUF_SIZE * 10] = {};	//第二缓冲区
+	int _lastPos = 0;
+
+public:
+	ClientSocket(SOCKET sockfd = INVALID_SOCKET) {
+		_sockfd = sockfd;
+		memset(_msgRecv, 0, sizeof(_msgRecv));
+		_lastPos = 0;
+	}
+
+	SOCKET getSockfd() { return _sockfd; }
+	char* msgbuf() { return _msgRecv; }
+	int getLastPos() { return _lastPos; }
+	void setLastPos(int a) { _lastPos = a; }
+};
+
 class EasyTcpServer {
 private:
 	SOCKET _sock;
-	std::vector<SOCKET> g_clients;
+	std::vector<ClientSocket*> _clients;
+	char _szRecv[RECV_BUF_SIZE] = {};		//接受缓冲区
 public:
 	EasyTcpServer() {
 		_sock = INVALID_SOCKET;
@@ -107,9 +129,8 @@ public:
 			NewUser userJoin;
 			Send2ALLData(&userJoin);
 			printf("New Client:SOCKET = %d  IP = %s\n", (int)_csock, inet_ntoa(clientAddr.sin_addr));
-			g_clients.push_back(_csock);
+			_clients.push_back(new ClientSocket(_csock));
 		}
-
 	}
 	bool isRun() { return _sock != INVALID_SOCKET;}
 
@@ -119,9 +140,9 @@ public:
 			FD_ZERO(&fdRead);
 			FD_SET(_sock, &fdRead);
 			SOCKET maxSock = _sock;
-			for (int i = g_clients.size() - 1; i >= 0; i--) {
-				FD_SET(g_clients[i], &fdRead);
-				maxSock = maxSock > g_clients[i] ? maxSock : g_clients[i];
+			for (int i = _clients.size() - 1; i >= 0; i--) {
+				FD_SET(_clients[i]->getSockfd(), &fdRead);
+				maxSock = maxSock > (_clients[i]->getSockfd()) ? maxSock : _clients[i]->getSockfd();
 			}
 			timeval time = { 1,0 };
 			int ret = select(maxSock + 1, &fdRead, 0, 0, &time);
@@ -135,34 +156,21 @@ public:
 				//accept等待客户端链接
 				AcceptClient();
 			}
-#ifdef _WIN32
-			for (size_t k = 0; k < fdRead.fd_count; ++k)
+			for (int i = (int)_clients.size() - 1; i >= 0; --i)
 			{
-				if (-1 == RecvData(fdRead.fd_array[k]))
+				if (FD_ISSET(_clients[i]->getSockfd(), &fdRead)) //判断有没有
 				{
-					auto iter = find(g_clients.begin(), g_clients.end(), fdRead.fd_array[k]);
-					if (iter != g_clients.end())
+					if (-1 == RecvData(_clients[i]))
 					{
-						g_clients.erase(iter);
-					}
-				}
-			}
-#else
-			for (int i = (int)g_clients.size() - 1; i >= 0; --i)
-			{
-				if (FD_ISSET(g_clients[i], &fdRead)) //判断有没有
-				{
-					if (-1 == RecvData(g_clients[i]))
-					{
-						auto iter = g_clients.begin() + i;
-						if (iter != g_clients.end())
+						auto iter = _clients.begin() + i;
+						if (iter != _clients.end())
 						{
-							g_clients.erase(iter);
+							delete _clients[i];
+							_clients.erase(iter);
 						}
 					}
 				}
 			}
-#endif
 			//printf("other work doing\n");
 		}
 		return true;
@@ -173,9 +181,10 @@ public:
 		if (_sock != INVALID_SOCKET)
 		{
 #ifdef _WIN32
-			for (int k = 0; k < (int)g_clients.size(); ++k)
+			for (int k = 0; k < (int)_clients.size(); ++k)
 			{
-				closesocket(g_clients[k]);
+				closesocket(_clients[k]->getSockfd());
+				delete _clients[k];
 			}
 			//6 关闭socket
 
@@ -184,52 +193,66 @@ public:
 			//清除环境
 			WSACleanup();
 #else
-			for (int k = 0; k < (int)g_clients.size(); ++k)
+			for (int k = 0; k < (int)_clients.size(); ++k)
 			{
-				close(g_clients[k]);
+				closesocket(_clients[k]->getSockfd());
+				delete _clients[k];
 			}
 			close(_sock);
 #endif
 			_sock = INVALID_SOCKET;
+			_clients.clear();
 		}
 	}
 
-	int RecvData(SOCKET _csock) {
-		char szRecv[1024] = {};
-		//接收客户端请求
-		int nlen = (int)recv(_csock, szRecv, sizeof(DataHeader), 0);
-		DataHeader* _header = (DataHeader*)szRecv;
-		if (nlen <= 0) {
-			printf("client<Socket=%d> end\n", (int)_csock);
+	int RecvData(ClientSocket* client) {
+		int nLen = (int)recv(client->getSockfd(), _szRecv, RECV_BUF_SIZE, 0);
+		DataHeader* _header = (DataHeader*)_szRecv;
+		if (nLen <= 0) {
+			printf("client<Socket=%d> end\n", client->getSockfd());
 			return -1;
 		}
-		recv(_csock, szRecv + sizeof(DataHeader), _header->dataLength - sizeof(DataHeader), 0);
-		OnNetMsg(_csock, _header);
+		memcpy(client->msgbuf() + client->getLastPos(), _szRecv, nLen);
+		client->setLastPos(client->getLastPos() + nLen);
+		while (client->getLastPos() >= sizeof(DataHeader)) {
+			DataHeader* header = (DataHeader*)client->msgbuf();
+			if (client->getLastPos() >= header->dataLength) {	//避免粘包
+				int len = client->getLastPos() - header->dataLength;
+				OnNetMsg(client->getSockfd(), header);
+				memcpy(client->msgbuf(), client->msgbuf() + header->dataLength, len);
+				client->setLastPos(len);
+			}
+			else break;	//少包
+		}
+
 		return 0;
 	}
 
 	void OnNetMsg(SOCKET _csock, DataHeader* _header) {
 		switch (_header->cmd) {
-		case CMD_LOGIN:
-		{
-			Login* login = (Login*)_header;
-			printf("Received CLient<Socket=%d>command:  Data Length= %d  user = %s pass = %s\n", (int)_csock, login->dataLength, login->userName, login->passWord);
-			LoginResult res;
-			send(_csock, (char*)&res, sizeof(LoginResult), 0);
-		}
-		break;
-		case CMD_LOGOUT:
-		{
-			LogOut* logout = (LogOut*)_header;
-			printf("Received command: user=%s\n", logout->userName);
-			LogoutResult _lgres;
-			send(_csock, (char*)&_lgres, sizeof(LogoutResult), 0);
-		}
-		break;
-		default:
-			DataHeader hd = { 0,CMD_ERROR };
-			send(_csock, (const char*)&hd, sizeof(hd), 0);
+			case CMD_LOGIN:
+			{
+				Login* login = (Login*)_header;
+				//printf("Received CLient<Socket=%d>command:  Data Length= %d  user = %s pass = %s\n", (int)_csock, login->dataLength, login->userName, login->passWord);
+				LoginResult res;
+				send(_csock, (char*)&res, sizeof(LoginResult), 0);
+			}
 			break;
+			case CMD_LOGOUT:
+			{
+				LogOut* logout = (LogOut*)_header;
+				//printf("Received command: user=%s\n", logout->userName);
+				LogoutResult _lgres;
+				send(_csock, (char*)&_lgres, sizeof(LogoutResult), 0);
+			}
+			break;
+			default:
+			{
+				printf("Received CLient<Socket=%d> unrecognized command:  Data Length= %d\n", (int)_csock, _header->dataLength);
+				//DataHeader hd = { 0,CMD_ERROR };
+				//send(_csock, (const char*)&hd, sizeof(hd), 0);
+				break;
+			}
 		}
 	}
 
@@ -243,8 +266,8 @@ public:
 
 	void Send2ALLData(DataHeader* _header) {
 		if (isRun() && _header) {
-			for (int n = g_clients.size() - 1; n >= 0; n--) {
-				SendData(g_clients[n], _header);
+			for (int n = _clients.size() - 1; n >= 0; n--) {
+				SendData(_clients[n]->getSockfd(), _header);
 			}
 		}
 	}
